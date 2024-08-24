@@ -26,13 +26,13 @@ logging.basicConfig(level=logging.INFO)
 RECOGNITION_API_URL = "https://wine-recognition2.p.rapidapi.com/v1/results"
 HEADERS = {
     "x-rapidapi-key": WINE_API_KEY,
-    "x-rapidapi-host": "wine-recognition2.p.rapidapi.com",
-    "Content-Type": "multipart/form-data"
+    "x-rapidapi-host": "wine-recognition2.p.rapidapi.com"
 }
 
-# Проверка и создание директории tmp
+# Проверка и создание директории tmp, если она не существует
 if not os.path.exists("tmp"):
     os.makedirs("tmp")
+
 
 # Обработчик команды /start
 @dp.message(Command("start"))
@@ -43,11 +43,15 @@ async def cmd_start(message: types.Message):
 # Обработчик загрузки изображений
 @dp.message(F.content_type == types.ContentType.PHOTO)
 async def handle_photo(message: types.Message):
-    # Получение объекта фотографии
-    photo = message.photo[-1]  # Берем изображение с максимальным разрешением
+    # Получение объекта фотографии с максимальным разрешением
+    photo = message.photo[-1]
 
-    # Загрузка фото на локальный диск
-    photo_path = f"tmp/{photo.file_id}.jpg"
+    # Получение информации о файле и генерация пути для сохранения
+    file_info = await bot.get_file(photo.file_id)
+    file_extension = os.path.splitext(file_info.file_path)[1]  # Получаем расширение файла (.jpg или .png)
+    photo_path = f"tmp/{photo.file_id}{file_extension}"
+
+    # Скачивание фото на локальный диск
     await bot.download(photo, destination=photo_path)
 
     # Отправка фото на распознавание
@@ -55,27 +59,39 @@ async def handle_photo(message: types.Message):
 
     # Ответ пользователю
     if result:
-        await message.answer(f"Распознано: {result}")
+        await message.answer(result)
     else:
         await message.answer("Извините, не удалось распознать винную этикетку. Попробуйте другое изображение.")
 
 
 async def recognize_wine(image_path):
-    # Чтение изображения
+    # Открытие файла изображения для чтения
     with open(image_path, "rb") as image_file:
-        files = {'file': image_file}
+        # Отправка запроса к API с использованием правильного имени поля "image"
+        files = {
+            "image": image_file  # Поле должно называться "image"
+        }
 
-        # Отправка запроса к API
-        loop = asyncio.get_event_loop()  # Получаем текущий event loop
-        response = await loop.run_in_executor(None, lambda: requests.post(RECOGNITION_API_URL, headers=HEADERS, files=files))
+        # Отправка запроса на распознавание изображения
+        response = requests.post(RECOGNITION_API_URL, headers=HEADERS, files=files)
 
         # Обработка ответа
         if response.status_code == 200:
             data = response.json()
-            # Извлечение наиболее вероятного результата
             try:
-                wine_name = list(data['results'][0]['entities'][0]['classes'].keys())[0]
-                return wine_name
+                # Получение списка наименований вин с вероятностями
+                wine_classes = data['results'][0]['entities'][0]['classes']
+                results = []
+
+                # Ограничиваем количество вариантов до 3 и пронумеровываем их
+                for idx, (wine_name, probability) in enumerate(wine_classes.items()):
+                    if idx >= 3:  # Выводим только первые 3 варианта
+                        break
+                    probability_percent = probability * 100
+                    results.append(f"{idx + 1}) Это вино {wine_name} с вероятностью {probability_percent:.2f}%")
+
+                # Возвращаем результат в виде строки, разделенной новой строкой
+                return "\n".join(results)
             except (KeyError, IndexError):
                 return None
         else:
@@ -84,7 +100,7 @@ async def recognize_wine(image_path):
 
 
 async def main():
-    # Запуск polling внутри асинхронного контекста
+    # Запуск polling в асинхронном контексте
     await dp.start_polling(bot, skip_updates=True)
 
 
